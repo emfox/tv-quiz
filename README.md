@@ -14,6 +14,9 @@
 
 ```
 config/gate.conf        唯一配置：档位、年级、题数、模式、名单、端口
+config/profiles/        设备画像：浏览器包名、busybox 路径、自启方式
+  ├── tcl.conf            TCL / 雷鸟（本仓库最初适配的机器）
+  └── generic.conf        其它已 root 的安卓电视 / 盒子
 quiz/                   出题与页面
   ├── gen.js              运行时出题（数学、英语），可 require
   ├── pick.js             组一轮题（按科目取、避开最近出过的），可 require
@@ -24,12 +27,14 @@ quiz/                   出题与页面
   ├── cli.js              命令行出题，用来预览和校验
   └── check.js sim.js adj_sample.js   自检脚本
 gate/                   控制部分
-  ├── gate.sh             看门狗（init 服务，root 运行）
-  ├── tvgate.rc.in        init 服务定义模板（@DEVICE_DIR@ 由安装脚本替换）
+  ├── gate.sh             看门狗（root 运行；设备差异全从 config.sh 读）
+  ├── tvgate.rc.in        init 服务模板（initrc 自启用，@DEVICE_DIR@ 由安装脚本替换）
+  ├── boot.sh.in          开机脚本模板（magisk / initd 自启用）
   └── cgi-bin/pass.sh     通关标记 CGI
 tools/
-  ├── install.sh          部署到电视（推文件、装 rc、重启服务）
+  ├── install.sh          部署到电视（合并配置、推文件、装自启、重启服务）
   ├── status.sh           看服务/配置/当天次数/日志
+  ├── probe.sh            采样前台应用，帮新机器填名单
   ├── uninstall.sh        卸载
   └── tvroot.sh           以 root 执行命令并回读输出（依赖固件里的 tvroot 服务）
 ```
@@ -44,19 +49,30 @@ tools/
    `am start -a VIEW http://127.0.0.1:8088/?g=<年级>&n=<题数>&t=<时间戳>`。`t` 用来破 WebView 缓存。
 4. **答题**：页面从 `bank.json` 取语文、用 `gen.js` 现场生成数学和英语，经 `pick.js` 组题。答错换一组新题重来，不会卡死。
 5. **放行**：答对后页面 `fetch('cgi-bin/pass.sh')` 写 `pass.stamp`；看门狗每 3 秒查它，看到就
-   `force-stop com.tcl.browser`，再把第 3 步记下的组件 `am start -n` 拉回前台。拉回的是**同一个任务**（`taskId` 不变），所以播放进度是接着的。
+   `force-stop <BROWSER>`，再把第 3 步记下的组件 `am start -n` 拉回前台。拉回的是**同一个任务**（`taskId` 不变），所以播放进度是接着的。
 6. **次数**：只有答对放行才把当天次数 +1，写进 `state`（`d=日期 n=次数`）；日期变了就归零，等于每天从第一档重新开始。
 
 答题过程中退出、按 Home、切别的应用都会被拉回；电视自动息屏时不会去唤醒它，而是中止本轮。
 
 ## 配置
 
-所有参数集中在 `config/gate.conf`，`install.sh` 会把它拷到电视上作为 `config.sh`。
+参数分两类：
+
+- **偏好**放在 `config/gate.conf`（档位、年级、题数、名单……）；
+- **设备事实**放在 `config/profiles/<名>.conf`（浏览器包名、busybox 路径、自启方式），由 `PROFILE` 选择。
+
+`install.sh` 把两份合并成一份，拷到电视上作为 `config.sh`；同名参数以 `gate.conf` 为准
+（想临时覆盖某个设备参数，直接在 `gate.conf` 里写一行即可）。
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
 | `ADB_HOST` | `192.168.10.60:5555` | 电视的 adb 地址，只给 `tools/*.sh` 用 |
 | `DEVICE_DIR` | `/data/local/tmp/tvquiz` | 设备上的安装目录 |
+| `PROFILE` | `tcl` | 设备画像名，对应 `config/profiles/<名>.conf` |
+| `BROWSER` | 见 profile | 打开答题页的浏览器包名；`auto` = 安装时在设备上探测 |
+| `BB` | 见 profile | busybox 路径（只有 httpd/wget 用它）；`auto` = 运行时探测 6 个常见位置 |
+| `BOOT_MODE` | 见 profile | `initrc` / `magisk` / `initd` / `none` / `auto` |
+| `ROOT_MODE` | `auto` | `auto` / `tvroot` / `su`，只影响安装脚本挑哪条 root 通道 |
 | `LIMITS` | `600 600 480 480 300` | 当天第 1、2…次弹题前的宽限秒数，最后一档重复；过午夜归零 |
 | `GRADE` | `5` | 出题年级，`5` 或 `6` |
 | `N` | `3` | 每轮题数（1–6） |
@@ -86,13 +102,18 @@ adb shell 'echo set=1 >> /data/local/tmp/tvquiz/state'   # 把当天次数手动
 
 ```sh
 tools/install.sh                    # 首次安装或更新
+tools/install.sh --profile generic  # 换一份设备画像
 tools/install.sh --no-restart       # 只推文件，不打断正在跑的闸门
+tools/install.sh --list-profiles    # 看有哪些画像
 tools/status.sh                     # 服务、配置、当天次数、日志
-tools/uninstall.sh [--with-rc]      # 卸载（--with-rc 连 init 服务一起删）
+tools/uninstall.sh [--with-boot]    # 卸载（--with-boot 连开机自启一起删）
 adb 不在 PATH 时：ADB=/path/to/adb tools/install.sh
 ```
 
-`install.sh` 会依次：连设备 → 校验型号 → 推 `quiz/`、`gate/`、配置 → 装 `tvgate.rc.in` 渲染出的 init 服务（缺才装）→ 重启看门狗 → 打印状态。装 rc 和重启进程要 root，走 `tools/tvroot.sh`（固件里的 `tvroot` init 服务）或 `su`；没有 root 时只推文件，并提示需要重启电视。
+`install.sh` 会依次：连设备 → 合并 profile + `gate.conf` → 探测浏览器 / busybox / 自启方式 →
+推 `quiz/`、`gate/`、合并后的配置 → 装开机自启（已存在则不覆盖）→ 重启看门狗 → 打印状态。
+装自启和重启进程要 root，走 `tools/tvroot.sh`（固件里的 `tvroot` init 服务）或 `su`；
+没有 root 时只推文件，并提示需要手动启动或重启电视。
 
 ## 出题模块单独用
 
@@ -130,10 +151,83 @@ node quiz/sim.js          # 假 DOM 跑 200 轮真实页面：抽题、断电恢
 node quiz/adj_sample.js   # 抽样比较级/最高级题，肉眼过一遍
 ```
 
+## 移植到其它设备
+
+### 依赖分层：只剩一个硬门槛
+
+| 依赖 | 通用性 | 在哪儿解决 |
+|---|---|---|
+| 控制循环（读前台 / 拉起 / 关闭 / 写文件） | ✅ 纯 shell，`shell` 用户就能做 | `gate/gate.sh` |
+| 宿主浏览器 | ⭕ 换个包名即可 | `BROWSER`（`auto` 时安装脚本探测） |
+| busybox（**只有** httpd / wget 需要） | ⭕ 六个常见路径自动探测 | `BB=auto` |
+| `dumpsys` / `am` 输出格式随版本变 | ⭕ 已兼容新旧 ROM | `focus_line()`、`quiz_visible()` |
+| 开机自启 | ❌ 要 root + 一个自启位置 | `BOOT_MODE` |
+| 改脚本后重启看门狗 | ❌ 要 root | `ROOT_MODE` |
+
+代码里已经没有厂商相关的硬编码：包名、路径、自启方式全在 `config/` 里。真正卡人的只有
+**"一个能开机自启的 root 进程"**——这也是做成 APK（Device Owner + 无障碍）才能绕开的那道墙。
+
+### 开机自启的三种落点
+
+| `BOOT_MODE` | 落点 | 适用 |
+|---|---|---|
+| `initrc` | `/vendor/etc/init/tvgate.rc` | 能写 `/vendor` 的固件（本机 TCL 走这条，由 init 托管、能自动重启） |
+| `magisk` | `/data/adb/service.d/50-tvquiz.sh` | Magisk / KernelSU / APatch，最省事 |
+| `initd` | `/system/etc/init.d/99-tvquiz` | 老 ROM / 部分定制固件（需要能 remount rw） |
+| `none` | — | 都没有时，重启后手动跑 `gate.sh` |
+
+`auto` 会按 `service.d` → `/vendor/etc/init` → `init.d` 的顺序探测。
+
+### 换机器的步骤
+
+```sh
+# 1) 看看有哪些画像
+tools/install.sh --list-profiles
+
+# 2) 采样：跑起来之后拿遥控器把该计时的应用（影视、直播、HDMI）和
+#    不该计时的界面（桌面、设置）各停几秒
+tools/probe.sh --host 192.168.1.9:5555 -t 60
+
+# 3) 把输出粘进 config/gate.conf（不想要名单也可以保持 MODE=except）
+tools/probe.sh -t 60 --emit watch >> /tmp/new.conf
+
+# 4) 部署，按设备探测的结果装自启
+tools/install.sh --profile generic --host 192.168.1.9:5555
+tools/status.sh  --host 192.168.1.9:5555
+```
+
+`probe.sh -t 60` 的输出（按停留时长排序，同时给出 `am start -n` 要用的完整组件名）：
+
+```
+按停留时长排序：
+     36s    24次  com.tcl.vod
+     17s    11次  com.tcl.tv
+      9s     6次  com.spocky.projengmenu
+
+完整组件名（am start -n 用）：
+  com.tcl.vod/com.tcl.vod.MainActivity
+  com.tcl.tv/com.tcl.tv.TVActivity
+  com.spocky.projengmenu/com.spocky.projengmenu.ui.home.MainActivity
+```
+
+### 没有 root 能做到什么
+
+推文件、`gate.sh` 手动前台运行都能跑起来（计数、弹题、答题、放行都正常），差的只是
+**开机自启**和**改配置后重启服务**。重新开机就得手动：
+
+```sh
+adb shell "nohup /data/local/tmp/tvquiz/gate.sh >/dev/null 2>&1 &"
+```
+
+（部分 ROM 会回收这种后台进程，所以正式用还是要 root 自启。）
+
 ## 已知限制
 
-- 强依赖系统自带的 `com.tcl.browser`：被禁用或清数据就失效。
-- 闸门本身没有界面，全靠文件与配置驱动；调参数要重启看门狗。
+- 需要一个能开机自启的 **root 进程**：这是唯一的硬门槛（见上节）。
+- 宿主是**浏览器**：本机用 `com.tcl.browser`，换机器要换成能访问 `http://127.0.0.1` 的浏览器
+  （`com.android.htmlviewer` 不行，它没有 INTERNET 权限）。浏览器被禁用或清数据就失效。
+- 闸门本身没有界面，全靠文件与配置驱动；改启动时读的参数要重启看门狗。
 - 不答就一直拦着（`QUIZ_TIMEOUT` 后重开新的一轮），没有"放弃"出口；需要的话可以加"连续 N 轮超时后自动息屏"。
 - HDMI 输入在系统里就是 `com.tcl.tv`，所以外接 Switch / 电视果同样计时；答题那几分钟主机不会暂停。
-- `root` 来自刷过的固件里的 `tvroot` init 服务（`CapEff=3fffffffff`）。原厂固件上 `su` 是空壳（`CapBnd=0xc0`），装不了这个闸门。
+- 这台机器的 `root` 来自刷过的固件里的 `tvroot` init 服务（`CapEff=3fffffffff`）；原厂固件上
+  `su` 是空壳（`CapBnd=0xc0`）。换机器时只要 `su` 能拿到完整权限（Magisk 等）就行。

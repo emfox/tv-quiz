@@ -1,0 +1,17 @@
+#!/system/bin/sh
+# tv-quiz: start the viewing gate at boot.
+# Installed as /data/adb/service.d/50-tvquiz.sh (Magisk / KernelSU / APatch)
+# or /system/etc/init.d/99-tvquiz (legacy ROMs).
+# The install directory below is filled in by tools/install.sh.
+D=@DEVICE_DIR@
+
+[ -f "$D/pause" ] && exit 0
+[ -x "$D/gate.sh" ] || exit 0
+
+# already running?
+for p in /proc/[0-9]*; do
+  c=$(cat "$p/cmdline" 2>/dev/null | tr '\0' ' ')
+  case "$c" in *"$D/gate.sh"*) exit 0 ;; esac
+done
+
+( exec "$D/gate.sh" ) &

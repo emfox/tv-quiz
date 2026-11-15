@@ -1,13 +1,33 @@
 #!/system/bin/sh
-# Viewing gate: after LIMITS[k] seconds of video, require a quiz before allowing more.
-BB=/vendor/bin/busybox
+# Viewing gate: after LIMITS[k] seconds of screen time, require a quiz.
+#
+# Everything device specific (browser package, busybox path, autostart style)
+# comes from config.sh, which tools/install.sh renders from
+# config/profiles/<name>.conf + config/gate.conf. Nothing below should need
+# editing to move to another Android TV.
+
 W=/data/local/tmp/tvquiz
 LOG=$W/gate.log
 
 cfg() {
-  sed -n "s/^$1=//p" $W/config.sh 2>/dev/null | head -1 \
-    | $BB sed 's/[[:space:]]*#.*$//; s/[[:space:]]*$//'
+  sed -n "s/^$1=//p" "$W/config.sh" 2>/dev/null | head -1 \
+    | sed 's/[[:space:]]*#.*$//; s/[[:space:]]*$//'
 }
+
+# busybox is only needed for httpd/wget (serving the page); grep and sed are
+# toybox on every Android since 6.0, so they are used directly.
+find_bb() {
+  local c
+  for c in "$(cfg BB)" /vendor/bin/busybox /data/adb/magisk/busybox \
+           /data/adb/ksu/bin/busybox /data/adb/ap/bin/busybox \
+           /system/xbin/busybox /system/bin/busybox /data/data/com.termux/files/usr/bin/busybox; do
+    case "$c" in ""|auto) continue ;; esac
+    [ -x "$c" ] && { echo "$c"; return 0; }
+  done
+  command -v busybox 2>/dev/null
+}
+BB=$(find_bb)
+
 LIMIT=$(cfg LIMIT); LIMIT=${LIMIT:-600}
 # grace period for the 1st, 2nd, ... quiz of the day; last entry repeats
 LIMITS=$(cfg LIMITS); LIMITS=${LIMITS:-$LIMIT}
@@ -18,13 +38,17 @@ STEP=$(cfg STEP); STEP=${STEP:-10}
 QUIZ_TIMEOUT=$(cfg QUIZ_TIMEOUT); QUIZ_TIMEOUT=${QUIZ_TIMEOUT:-420}
 PORT=$(cfg PORT); PORT=${PORT:-8088}
 DBG=$(cfg DBG); DBG=${DBG:-0}
-WATCH=$(cfg WATCH)
-[ -z "$WATCH" ] && WATCH="com.tcl.vod com.tcl.tliveplay com.tcl.tv com.cibn.tv com.ktcp.csvideo com.tcl.qiyiguo com.qiyi.video.tv com.xiaodianshi.tv.yst com.quark.yun.tv org.xbmc.kodi com.fongmi.android.tv com.tcl.miracast com.tcl.MultiScreenInteraction_TV"
-WATCH=" $WATCH "
+BROWSER=$(cfg BROWSER); BROWSER=${BROWSER:-com.tcl.browser}
 MODE=$(cfg MODE); MODE=${MODE:-except}
 AWAY_RESET=$(cfg AWAY_RESET); AWAY_RESET=${AWAY_RESET:-1800}
+
+WATCH=$(cfg WATCH)
+[ -z "$WATCH" ] && WATCH="com.tcl.vod com.tcl.tv"
+WATCH=" $WATCH "
+
+# Fallback only: config.sh always carries the real list.
 SKIP=$(cfg SKIP)
-[ -z "$SKIP" ] && SKIP="com.spocky.projengmenu com.tcl.cyberui com.tcl.convergehome com.google.android.leanbacklauncher.partnercustomizer com.tcl.settings com.android.settings com.android.systemui com.tcl.initsetup com.tcl.shutdowndialog com.tcl.versionUpdateApp com.snm.upgrade com.tcl.packageinstaller.service.renew com.android.packageinstaller"
+[ -z "$SKIP" ] && SKIP="com.android.systemui com.android.settings com.android.tv.settings com.android.tvlauncher com.android.packageinstaller com.google.android.packageinstaller com.google.android.tvlauncher com.google.android.apps.tv.launcherx com.google.android.leanbacklauncher com.google.android.tungsten.setupwraith"
 SKIP=" $SKIP "
 
 log() {
@@ -65,15 +89,29 @@ limit_for() {
   echo "${last:-$LIMIT}"
 }
 
-fg() {
-  dumpsys window windows 2>/dev/null | $BB grep mCurrentFocus | head -1 \
-    | $BB sed 's/.*u0 //; s#/.*##; s/}//; s/[[:space:]]*$//'
+# "dumpsys window windows" exists up to Android 11; newer builds only take
+# "dumpsys window". Line looks like:
+#   mCurrentFocus=Window{1a2b3c u0 com.foo/com.foo.MainActivity}
+focus_line() {
+  local l
+  l=$(dumpsys window windows 2>/dev/null | grep 'mCurrentFocus=' | head -1)
+  [ -z "$l" ] && l=$(dumpsys window 2>/dev/null | grep 'mCurrentFocus=' | head -1)
+  echo "$l"
 }
 
 # full component, e.g. com.tcl.vod/com.tcl.vod.MainActivity
+# Parsed with sed: the brace in Window{...} is awkward to strip portably.
 fgc() {
-  dumpsys window windows 2>/dev/null | $BB grep mCurrentFocus | head -1 \
-    | $BB sed 's/.*u0 //; s/}//; s/[[:space:]]*$//'
+  local c
+  c=$(focus_line)
+  [ -z "$c" ] && { echo null; return; }
+  echo "$c" | sed 's/.*mCurrentFocus=//; s/}.*//; s/.* //'
+}
+
+fg() {
+  local c
+  c=$(fgc)
+  echo "${c%%/*}"
 }
 
 # Is the foreground app "screen time"? MODE=except (default) counts everything
@@ -89,7 +127,7 @@ counted() {
 }
 
 screen_on() {
-  dumpsys power 2>/dev/null | $BB grep -q "mWakefulness=Awake"
+  dumpsys power 2>/dev/null | grep -q "mWakefulness=Awake"
 }
 
 # Bring the app the kid came from back to the front. The task is usually still
@@ -97,9 +135,9 @@ screen_on() {
 # playing); if that fails, relaunch through the launcher.
 resume_prev() {
   local comp="$1" pkg
-  [ -z "$comp" ] && return
+  case "$comp" in ''|null) return ;; esac
+  case "$comp" in "$BROWSER"/*) return ;; esac
   pkg=${comp%%/*}
-  case "$comp" in com.tcl.browser/*) return ;; esac
   am start -n "$comp" >/dev/null 2>&1
   sleep 2
   [ "$(fg)" = "$pkg" ] && return
@@ -108,37 +146,57 @@ resume_prev() {
 }
 
 start_server() {
+  [ -z "$BB" ] && return 1
   $BB httpd -p "$PORT" -h "$W" 2>/dev/null
   sleep 1
 }
 
-# The page lives on 127.0.0.1:8088; if httpd died the browser falls back to its
+# The page lives on 127.0.0.1:PORT; if httpd died the browser falls back to its
 # own home page and the kid sees a sitemap instead of a question.
 server_up() {
+  [ -z "$BB" ] && return 1
   $BB wget -q -O /dev/null -T 3 "http://127.0.0.1:$PORT/index.html" 2>/dev/null && return 0
   start_server
 }
 
-# Focus flaps while the page is loading (the TV app grabs it back for a moment),
-# so trust the task stack instead: the browser task counts as up if it is visible.
+# Focus flaps while the page is loading (the app underneath grabs it back for a
+# moment), so trust the task stack instead. "am stack list" is gone in newer
+# releases; there the activity dump is used, and as a last resort a recent
+# foreground hit within 20s.
+LAST_BROWSER_TS=""
 quiz_visible() {
-  am stack list 2>/dev/null | $BB grep "com.tcl.browser/" | $BB grep -q "visible=true"
+  local st now
+  [ -z "$BROWSER" ] && return 0     # never reopen in a loop when unset
+  st=$(am stack list 2>/dev/null)
+  case "$st" in
+    *taskId*)
+      echo "$st" | grep "$BROWSER/" | grep -q "visible=true"
+      return $?
+      ;;
+  esac
+  if dumpsys activity activities 2>/dev/null | grep -q "ResumedActivity.*$BROWSER"; then
+    return 0
+  fi
+  now=$(date +%s)
+  [ -n "$LAST_BROWSER_TS" ] && [ $((now - LAST_BROWSER_TS)) -le 20 ]
 }
 
 open_quiz() {
   local extra=""
-  server_up
+  server_up || return 1
   [ "$DBG" = "1" ] && extra="&dbg=1"
   am start -a android.intent.action.VIEW -d "http://127.0.0.1:$PORT/?g=$GRADE&n=$N&t=$(date +%s)$extra" >/dev/null 2>&1
 }
 
 run_quiz() {
-  local prev
+  local prev round start now el cur miss
+  if ! server_up; then
+    log "quiz aborted: no page server (busybox/BB missing, see README)"
+    return 2
+  fi
   prev=$(fgc)
   log "quiz start (grade=$GRADE) prev=$prev"
-  server_up
   rm -f "$W/pass.stamp"
-  local round start now el cur miss
   round=0
   while true; do
     round=$((round + 1))
@@ -149,14 +207,14 @@ run_quiz() {
       now=$(date +%s); el=$((now - start))
       if [ -f "$W/pass.stamp" ]; then
         log "quiz passed in ${el}s (round $round)"
-        am force-stop com.tcl.browser >/dev/null 2>&1
+        am force-stop "$BROWSER" >/dev/null 2>&1
         sleep 1
         resume_prev "$prev"
         log "resumed -> $(fg) (want ${prev})"
         return 0
       fi
       if [ "$el" -gt "$QUIZ_TIMEOUT" ]; then
-        am force-stop com.tcl.browser >/dev/null 2>&1
+        am force-stop "$BROWSER" >/dev/null 2>&1
         sleep 2
         if screen_on; then
           log "quiz timeout ${el}s (round $round) -> reopen"
@@ -166,6 +224,7 @@ run_quiz() {
         return 2
       fi
       cur=$(fg)
+      [ "$cur" = "$BROWSER" ] && LAST_BROWSER_TS=$(date +%s)
       # 屏幕关了就安静等着，别把电视叫醒
       if [ -z "$cur" ] || [ "$cur" = "null" ]; then
         miss=0
@@ -180,7 +239,7 @@ run_quiz() {
             open_quiz
           else
             log "quiz left by '$cur' at ${el}s, screen off -> abort round"
-            am force-stop com.tcl.browser >/dev/null 2>&1
+            am force-stop "$BROWSER" >/dev/null 2>&1
             return 2
           fi
           miss=0
@@ -195,6 +254,7 @@ run_quiz() {
 day=$(date +%Y-%m-%d)
 cnt=$(load_count)
 log "gate up: mode=$MODE grade=$GRADE day=$day count=$cnt limits=[$LIMITS]"
+log "env: bb=${BB:-none} browser=$BROWSER port=$PORT step=${STEP}s timeout=${QUIZ_TIMEOUT}s"
 server_up
 acc=0
 away=0
