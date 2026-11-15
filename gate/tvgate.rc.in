@@ -1,0 +1,4 @@
+service tvgate /system/bin/sh @DEVICE_DIR@/gate.sh
+    class late_start
+    user root
+    group root system

@@ -1,0 +1,8 @@
+node_modules/
+__pycache__/
+*.pyc
+*.log
+state
+pass.stamp
+.tvroot.cmd
+.tvgate.rc

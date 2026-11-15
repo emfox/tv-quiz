@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>答题时间</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  html, body { width: 100%; height: 100%; overflow: hidden; }
+  body {
+    background: #0d131e;
+    color: #e9eff8;
+    font-family: "Noto Sans CJK SC", "Source Han Sans SC", sans-serif;
+    display: flex; flex-direction: column;
+    padding: 3.2vh 4vw;
+  }
+  header {
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 2.2vh; color: #7f8ea6; letter-spacing: .05em;
+    flex: 0 0 auto;
+  }
+  #prog { color: #4ea1ff; font-weight: 700; }
+  #qbox { flex: 1 1 auto; display: flex; align-items: center; padding: 2vh 0; }
+  #q {
+    font-size: 4.4vh; line-height: 1.55; font-weight: 600;
+    max-height: 100%; overflow: hidden;
+  }
+  #opts {
+    flex: 0 0 auto; display: grid; grid-template-columns: 1fr 1fr;
+    gap: 2.2vh 2.4vw;
+  }
+  .opt {
+    display: flex; align-items: center;
+    background: #17202f; border: .45vh solid #24334a; border-radius: 1.2vh;
+    padding: 2.4vh 2vw; font-size: 3.2vh; line-height: 1.4;
+    color: #e9eff8; text-decoration: none; outline: none;
+    transition: background .12s, border-color .12s;
+  }
+  .opt .k {
+    flex: 0 0 auto; width: 4.4vh; height: 4.4vh; margin-right: 1.2vw; border-radius: 50%;
+    background: #24334a; color: #9fb3cf; font-size: 2.4vh; font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .opt:focus, .opt.sel {
+    background: #1d3a5c; border-color: #4ea1ff;
+  }
+  .opt:focus .k, .opt.sel .k { background: #4ea1ff; color: #0d131e; }
+  .opt.right { background: #143a26; border-color: #35c26a; }
+  .opt.right .k { background: #35c26a; color: #0d131e; }
+  .opt.wrong { background: #3d1620; border-color: #e0506e; }
+  .opt.wrong .k { background: #e0506e; color: #0d131e; }
+  #tip {
+    flex: 0 0 auto; min-height: 6vh; padding-top: 1.6vh;
+    font-size: 2.4vh; line-height: 1.5; color: #9fb3cf;
+  }
+  #tip.bad { color: #ff8fa3; }
+  #tip.good { color: #6ee7a0; }
+  #done {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: #0d131e; z-index: 99;
+    display: none; flex-direction: column; align-items: center; justify-content: center;
+    text-align: center;
+  }
+  #done h1 { font-size: 7vh; color: #6ee7a0; margin-bottom: 3vh; }
+  #done p { font-size: 3vh; color: #9fb3cf; }
+  #dbg {
+    position: fixed; right: 1vw; bottom: 0; z-index: 100;
+    font-size: 1.4vh; color: #4ea1ff; opacity: .55;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <span id="subj">准备中</span>
+  <span id="prog"></span>
+</header>
+
+<div id="qbox"><div id="q">正在加载题库…</div></div>
+<div id="opts"></div>
+<div id="tip"></div>
+
+<div id="done">
+  <h1>答对了</h1>
+  <p id="doneMsg">可以继续观看，正在返回…</p>
+</div>
+
+<div id="dbg"></div>
+
+<script src="gen.js"></script>
+<script src="pick.js"></script>
+<script>
+(function () {
+  var KEYS = ['A', 'B', 'C', 'D'];
+  var STORE = 'tvquiz_state';
+  var RECENT = 'tvquiz_recent';
+  var qs = new URLSearchParams(location.search);
+  var grade = parseInt(qs.get('g') || '5', 10);
+  var want = Math.min(6, Math.max(1, parseInt(qs.get('n') || '3', 10) || 3));
+  var dbg = qs.get('dbg') === '1';
+  var all = [], plan = [], idx = 0, locked = false;
+
+  function genPool() {
+    try { return (window.TVGEN && TVGEN.make(grade)) || []; } catch (e) { return []; }
+  }
+
+  function recent() {
+    try { return JSON.parse(localStorage.getItem(RECENT) || '[]'); } catch (e) { return []; }
+  }
+
+  function remember(list) {
+    var r = recent();
+    list.forEach(function (q) { if (r.indexOf(q.q) < 0) r.push(q.q); });
+    while (r.length > 150) r.shift();
+    try { localStorage.setItem(RECENT, JSON.stringify(r)); } catch (e) {}
+  }
+
+  function save() {
+    try {
+      localStorage.setItem(STORE, JSON.stringify({
+        g: grade, idx: idx, plan: plan, ts: Date.now()
+      }));
+    } catch (e) {}
+  }
+
+  function saveClear() {
+    try { localStorage.removeItem(STORE); } catch (e) {}
+  }
+
+  function restore() {
+    var s;
+    try { s = JSON.parse(localStorage.getItem(STORE) || 'null'); } catch (e) { return false; }
+    if (!s || s.g !== grade || !s.plan || s.plan.length !== want) return false;
+    /* 只接续同一轮答题（超时重开会重开页面），过期的进度作废，
+       免得孩子停在最后一题、下次开页面一题就通关 */
+    if (!s.ts || Date.now() - s.ts > 10 * 60 * 1000) return false;
+    if (typeof s.idx !== 'number' || s.idx < 0 || s.idx >= want) return false;
+    if (s.plan.some(function (q) {
+      return !q || !q.q || !q.o || q.o.length !== 4 || typeof q.a !== 'number';
+    })) return false;
+    plan = s.plan;
+    idx = s.idx;
+    return true;
+  }
+
+  /* 组题逻辑在 pick.js（TVQUIZ.buildRound），网页和命令行共用同一份 */
+  function buildPlan() {
+    var pool = genPool().concat(all.filter(function (q) { return q.grade === grade; }));
+    return TVQUIZ.buildRound({ pool: pool, want: want, recent: recent() });
+  }
+
+  function render() {
+    var q = plan[idx];
+    if (!q) return;
+    document.getElementById('subj').textContent = '第 ' + (grade) + ' 年级 · ' + q.subject;
+    document.getElementById('prog').textContent = '第 ' + (idx + 1) + ' / ' + plan.length + ' 题';
+    document.getElementById('q').textContent = q.q;
+    var box = document.getElementById('opts');
+    box.innerHTML = '';
+    q.o.forEach(function (text, i) {
+      var a = document.createElement('a');
+      a.className = 'opt';
+      a.href = '#';
+      a.tabIndex = 0;
+      a.setAttribute('data-i', i);
+      a.innerHTML = '<span class="k">' + KEYS[i] + '</span><span class="t"></span>';
+      a.querySelector('.t').textContent = text;
+      a.addEventListener('click', function (e) {
+        e.preventDefault();
+        choose(i, a);
+      });
+      box.appendChild(a);
+    });
+    document.getElementById('tip').className = '';
+    document.getElementById('tip').textContent = '用遥控器方向键选择，按「确定」提交';
+    if (dbg) document.getElementById('dbg').textContent = '答案 ' + KEYS[q.a];
+    locked = true;
+    setTimeout(function () { locked = false; }, 700);
+    save();
+    var first = box.querySelector('.opt');
+    if (first) first.focus();
+  }
+
+  function choose(i, el) {
+    if (locked) return;
+    locked = true;
+    var q = plan[idx];
+    var nodes = document.querySelectorAll('#opts .opt');
+    var tip = document.getElementById('tip');
+    nodes[q.a].classList.add('right');
+    if (i === q.a) {
+      tip.className = 'good';
+      tip.textContent = '答对了！' + (q.why || '');
+      idx++;
+      setTimeout(function () {
+        if (idx >= plan.length) return finish();
+        render();
+      }, 1400);
+    } else {
+      el.classList.add('wrong');
+      tip.className = 'bad';
+      tip.textContent = '答错了。正确答案是 ' + KEYS[q.a] + '。' + (q.why || '') + ' 马上重新出题…';
+      setTimeout(function () {
+        plan = buildPlan();
+        idx = 0;
+        render();
+      }, 3200);
+    }
+  }
+
+  function finish() {
+    remember(plan);
+    saveClear();
+    document.getElementById('done').style.display = 'flex';
+    document.getElementById('doneMsg').textContent = '可以继续观看，正在返回…';
+    fetch('cgi-bin/pass.sh', { cache: 'no-store' }).catch(function () {});
+  }
+
+  fetch('bank.json', { cache: 'no-store' })
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      all = d.questions || [];
+      if (!restore()) { plan = buildPlan(); idx = 0; }
+      if (!plan.length) throw new Error('题库为空');
+      render();
+    })
+    .catch(function (e) {
+      document.getElementById('q').textContent = '题库加载失败：' + e.message;
+    });
+})();
+</script>
+</body>
+</html>
