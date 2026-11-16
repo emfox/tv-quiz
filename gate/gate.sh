@@ -62,6 +62,14 @@ save_state() {
   chmod 644 "$STATE" 2>/dev/null
 }
 
+# 掉电后 RTC 会跳回 2000-01-01，对时后再跳回来。这种跳变不能当"跨日"处理，
+# 否则拔一下电源就把当天次数清零了。
+date_ok() {
+  local y=${1%%-*}
+  case "$y" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$y" -ge 2024 ] && [ "$y" -le 2100 ]
+}
+
 load_count() {
   local today d n
   today=$(date +%Y-%m-%d)
@@ -72,8 +80,12 @@ load_count() {
   fi
   case "$n" in ''|*[!0-9]*) n=0 ;; esac
   if [ "$d" != "$today" ]; then
-    n=0
-    save_state "$today" 0
+    # 只在新日期"确实更晚且两个日期都可信"时清零
+    if date_ok "$d" && date_ok "$today" && [ "$today" \> "$d" ]; then
+      log "new day $today (was $d) -> count reset"
+      n=0
+    fi
+    save_state "$today" "$n"
   fi
   echo "$n"
 }
@@ -266,9 +278,14 @@ while true; do
   fi
   d=$(date +%Y-%m-%d)
   if [ "$d" != "$day" ]; then
-    day=$d; cnt=0; acc=0; away=0
-    save_state "$day" 0
-    log "midnight rollover -> count reset, limit $(limit_for 1)s"
+    if date_ok "$day" && date_ok "$d" && [ "$d" \> "$day" ]; then
+      cnt=0; acc=0; away=0
+      log "midnight rollover $day -> $d, count reset, limit $(limit_for 1)s"
+    else
+      log "clock jumped $day -> $d (RTC/NTP), count kept at $cnt"
+    fi
+    save_state "$d" "$cnt"
+    day=$d
   fi
   # manual override: "set=N" in the state file is adopted once, then dropped
   ov=$(sed -n 's/^set=//p' "$STATE" 2>/dev/null | head -1)

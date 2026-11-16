@@ -92,13 +92,19 @@
 <script>
 (function () {
   var KEYS = ['A', 'B', 'C', 'D'];
-  var STORE = 'tvquiz_state';
   var RECENT = 'tvquiz_recent';
   var qs = new URLSearchParams(location.search);
   var grade = parseInt(qs.get('g') || '5', 10);
   var want = Math.min(6, Math.max(1, parseInt(qs.get('n') || '3', 10) || 3));
   var dbg = qs.get('dbg') === '1';
   var all = [], plan = [], idx = 0, locked = false;
+  var answered = 0;                 /* 本轮已经答了几题，用来核对"一题就过" */
+
+  /* 答题信标：记到设备上的 quiz.log，事后能核对这一轮到底答了几题。
+     用 Image 而不是 fetch：不关心响应、跨域细节少，失败也不影响答题。 */
+  function beacon(q) {
+    try { new Image().src = 'cgi-bin/log.sh?v=' + q + '&_=' + (+new Date()); } catch (e) {}
+  }
 
   function genPool() {
     try { return (window.TVGEN && TVGEN.make(grade)) || []; } catch (e) { return []; }
@@ -115,38 +121,16 @@
     try { localStorage.setItem(RECENT, JSON.stringify(r)); } catch (e) {}
   }
 
-  function save() {
-    try {
-      localStorage.setItem(STORE, JSON.stringify({
-        g: grade, idx: idx, plan: plan, ts: Date.now()
-      }));
-    } catch (e) {}
-  }
-
-  function saveClear() {
-    try { localStorage.removeItem(STORE); } catch (e) {}
-  }
-
-  function restore() {
-    var s;
-    try { s = JSON.parse(localStorage.getItem(STORE) || 'null'); } catch (e) { return false; }
-    if (!s || s.g !== grade || !s.plan || s.plan.length !== want) return false;
-    /* 只接续同一轮答题（超时重开会重开页面），过期的进度作废，
-       免得孩子停在最后一题、下次开页面一题就通关 */
-    if (!s.ts || Date.now() - s.ts > 10 * 60 * 1000) return false;
-    if (typeof s.idx !== 'number' || s.idx < 0 || s.idx >= want) return false;
-    if (s.plan.some(function (q) {
-      return !q || !q.q || !q.o || q.o.length !== 4 || typeof q.a !== 'number';
-    })) return false;
-    plan = s.plan;
-    idx = s.idx;
-    return true;
-  }
-
   /* 组题逻辑在 pick.js（TVQUIZ.buildRound），网页和命令行共用同一份 */
   function buildPlan() {
     var pool = genPool().concat(all.filter(function (q) { return q.grade === grade; }));
-    return TVQUIZ.buildRound({ pool: pool, want: want, recent: recent() });
+    var p = TVQUIZ.buildRound({ pool: pool, want: want, recent: recent() });
+    /* 兜底：池子异常时也要凑满 want 题，绝不让孩子答一题就放行 */
+    var guard = 0;
+    while (p.length < want && pool.length && guard++ < 20) {
+      p.push(pool[Math.floor(Math.random() * pool.length)]);
+    }
+    return p;
   }
 
   function render() {
@@ -176,7 +160,8 @@
     if (dbg) document.getElementById('dbg').textContent = '答案 ' + KEYS[q.a];
     locked = true;
     setTimeout(function () { locked = false; }, 700);
-    save();
+    remember([q]);
+    beacon('show&i=' + (idx + 1) + '&n=' + plan.length);
     var first = box.querySelector('.opt');
     if (first) first.focus();
   }
@@ -188,7 +173,9 @@
     var nodes = document.querySelectorAll('#opts .opt');
     var tip = document.getElementById('tip');
     nodes[q.a].classList.add('right');
+    beacon('ans&i=' + (idx + 1) + '&n=' + plan.length + '&ok=' + (i === q.a ? 1 : 0));
     if (i === q.a) {
+      answered++;
       tip.className = 'good';
       tip.textContent = '答对了！' + (q.why || '');
       idx++;
@@ -209,8 +196,7 @@
   }
 
   function finish() {
-    remember(plan);
-    saveClear();
+    beacon('pass&n=' + plan.length + '&ans=' + answered);
     document.getElementById('done').style.display = 'flex';
     document.getElementById('doneMsg').textContent = '可以继续观看，正在返回…';
     fetch('cgi-bin/pass.sh', { cache: 'no-store' }).catch(function () {});
@@ -220,8 +206,13 @@
     .then(function (r) { return r.json(); })
     .then(function (d) {
       all = d.questions || [];
-      if (!restore()) { plan = buildPlan(); idx = 0; }
+      /* 一轮 = 一次页面加载。不做跨页面接续：否则"答两题走开、回来补一题"
+         就能通关，也正是"只做一题就过了"的来源。 */
+      plan = buildPlan();
+      idx = 0;
       if (!plan.length) throw new Error('题库为空');
+      beacon('start&want=' + want + '&n=' + plan.length + '&g=' + grade +
+             '&q=' + encodeURIComponent(location.search));
       render();
     })
     .catch(function (e) {

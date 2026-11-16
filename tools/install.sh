@@ -48,7 +48,7 @@ PROFILE_FILE="$ROOT/config/profiles/$PROFILE.conf"
 [ -f "$PROFILE_FILE" ] || { echo "找不到设备画像: $PROFILE_FILE（用 --list-profiles 看有哪些）" >&2; exit 2; }
 
 MERGED="$(mktemp)"
-trap 'rm -f "$MERGED" "$MERGED".tmp "$MERGED".rc "$MERGED".boot' EXIT
+trap 'rm -f "$MERGED" "$MERGED".tmp "$MERGED".rc "$MERGED".boot "$MERGED".cgi' EXIT
 # profile 在前、gate.conf 在后：同名参数以 gate.conf 为准。最后按 key 去重，
 # 这样设备端的 cfg()（取第一行）与这里的判断不会读到不同的值。
 { grep -vE '^[[:space:]]*(#|$)' "$PROFILE_FILE"; echo; grep -vE '^[[:space:]]*(#|$)' "$CONF"; } \
@@ -139,10 +139,13 @@ A shell "mkdir -p $D/cgi-bin" || exit 1
 for f in index.html gen.js pick.js bank.json; do
   A push "$ROOT/quiz/$f" "$D/$f" >/dev/null || { echo "推送 $f 失败" >&2; exit 1; }
 done
-A push "$ROOT/gate/cgi-bin/pass.sh" "$D/cgi-bin/pass.sh" >/dev/null || exit 1
+for f in pass log; do
+  sed "s|@DEVICE_DIR@|$D|g" "$ROOT/gate/cgi-bin/$f.sh.in" > "$MERGED.cgi"
+  A push "$MERGED.cgi" "$D/cgi-bin/$f.sh" >/dev/null || { echo "推送 cgi-bin/$f.sh 失败" >&2; exit 1; }
+done
 A push "$ROOT/gate/gate.sh" "$D/gate.new" >/dev/null || exit 1
 A push "$MERGED" "$D/config.sh" >/dev/null || exit 1
-A shell "cd $D && mv -f gate.new gate.sh && chmod 755 gate.sh cgi-bin/pass.sh" || exit 1
+A shell "cd $D && mv -f gate.new gate.sh && chmod 755 gate.sh cgi-bin/pass.sh cgi-bin/log.sh" || exit 1
 echo "文件就位: $(A shell "ls $D" | tr '\n' ' ')"
 
 # ---- 开机自启 -------------------------------------------------------------

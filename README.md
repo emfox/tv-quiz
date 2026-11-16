@@ -30,7 +30,9 @@ gate/                   控制部分
   ├── gate.sh             看门狗（root 运行；设备差异全从 config.sh 读）
   ├── tvgate.rc.in        init 服务模板（initrc 自启用，@DEVICE_DIR@ 由安装脚本替换）
   ├── boot.sh.in          开机脚本模板（magisk / initd 自启用）
-  └── cgi-bin/pass.sh     通关标记 CGI
+  └── cgi-bin/
+      ├── pass.sh.in      通关标记 CGI
+      └── log.sh.in       答题信标 CGI（写 quiz.log，事后核对答了几题）
 tools/
   ├── install.sh          部署到电视（合并配置、推文件、装自启、重启服务）
   ├── status.sh           看服务/配置/当天次数/日志
@@ -47,12 +49,36 @@ tools/
 2. **判定**：`MODE=except` 时，除 `SKIP`（桌面 / 设置 / 系统弹窗 / 安装器 / 升级）外一律计入；`MODE=watch` 时只计 `WATCH` 名单。命中就 `acc += STEP`，否则只累加"离开时长"，离开超过 `AWAY_RESET` 才把 `acc` 清零——所以回桌面再点开不会重新计时。
 3. **到档位弹题**：`acc >= LIMITS[当天第几次]` 时，记下当前前台组件，然后
    `am start -a VIEW http://127.0.0.1:8088/?g=<年级>&n=<题数>&t=<时间戳>`。`t` 用来破 WebView 缓存。
-4. **答题**：页面从 `bank.json` 取语文、用 `gen.js` 现场生成数学和英语，经 `pick.js` 组题。答错换一组新题重来，不会卡死。
+4. **答题**：页面从 `bank.json` 取语文、用 `gen.js` 现场生成数学和英语，经 `pick.js` 组题，**一轮固定 `N` 题**。答错换一组新题重来，不会卡死。
+   一轮 = 一次页面加载：**不做跨页面接续**（否则"答两题走开、回来补一题"就能通关）。
+   每看一题 / 每答一次 / 通关各发一个信标到 `cgi-bin/log.sh`，写进 `quiz.log`。
 5. **放行**：答对后页面 `fetch('cgi-bin/pass.sh')` 写 `pass.stamp`；看门狗每 3 秒查它，看到就
    `force-stop <BROWSER>`，再把第 3 步记下的组件 `am start -n` 拉回前台。拉回的是**同一个任务**（`taskId` 不变），所以播放进度是接着的。
 6. **次数**：只有答对放行才把当天次数 +1，写进 `state`（`d=日期 n=次数`）；日期变了就归零，等于每天从第一档重新开始。
 
 答题过程中退出、按 Home、切别的应用都会被拉回；电视自动息屏时不会去唤醒它，而是中止本轮。
+
+## 答题日志（核对"这轮答了几题"）
+
+页面每看一题、每答一次、通关时各发一个 GET 到 `cgi-bin/log.sh`，按行追加到
+`/data/local/tmp/tvquiz/quiz.log`：
+
+```
+11-16 19:12:03 v=start&want=3&n=3&g=5&q=%3Fg%3D5%26n%3D3%26t%3D...
+11-16 19:12:05 v=show&i=1&n=3
+11-16 19:12:09 v=ans&i=1&n=3&ok=1
+11-16 19:12:13 v=show&i=2&n=3
+...
+11-16 19:12:31 v=pass&n=3&ans=3
+```
+
+- `start` 里的 `n` 是这一轮实际题目数（正常应等于 `config.sh` 的 `N`）；
+- `pass&ans=` 是这一轮答对的题数，**必须等于 `n`** 才可能通关；
+- 只有 `pass` 且 `ans == n` 才是"老老实实答完"。
+
+```sh
+adb shell tail -20 /data/local/tmp/tvquiz/quiz.log
+```
 
 ## 配置
 
@@ -228,6 +254,11 @@ adb shell "nohup /data/local/tmp/tvquiz/gate.sh >/dev/null 2>&1 &"
   （`com.android.htmlviewer` 不行，它没有 INTERNET 权限）。浏览器被禁用或清数据就失效。
 - 闸门本身没有界面，全靠文件与配置驱动；改启动时读的参数要重启看门狗。
 - 不答就一直拦着（`QUIZ_TIMEOUT` 后重开新的一轮），没有"放弃"出口；需要的话可以加"连续 N 轮超时后自动息屏"。
+- 一轮答题**不接续**：页面重开/看门狗重弹都从第 1 题开始。早先为了"页面重开能接着答"存了进度，
+  结果"答两题走开、回来补一题"就能通关（就是"只做一题就过了"），已去掉。
+- 电视**时钟会跳**：掉电后 RTC 回到 `2000-01-01`，对时后跳到当天。早先这会被当成"跨日"清零当天次数
+  （拔电源即可重置档位）；现在只有"新日期更晚且两个日期都合理（≥2024）"才清零，否则日志写
+  `clock jumped ... count kept`。
 - HDMI 输入在系统里就是 `com.tcl.tv`，所以外接 Switch / 电视果同样计时；答题那几分钟主机不会暂停。
 - 这台机器的 `root` 来自刷过的固件里的 `tvroot` init 服务（`CapEff=3fffffffff`）；原厂固件上
   `su` 是空壳（`CapBnd=0xc0`）。换机器时只要 `su` 能拿到完整权限（Magisk 等）就行。

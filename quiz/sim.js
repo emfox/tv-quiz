@@ -57,7 +57,13 @@ const localStorageStub = {
   removeItem: k => { delete store[k]; }
 };
 
-const stats = { pass: 0, pages: 0 };
+const stats = { pass: 0, pages: 0, beacons: [] };
+
+/* 页面用 new Image().src 发答题信标，这里接住 */
+function FakeImage() {}
+Object.defineProperty(FakeImage.prototype, 'src', {
+  set(v) { stats.beacons.push(String(v)); }
+});
 
 function newPage(query) {
   stats.pages++;
@@ -73,6 +79,7 @@ function newPage(query) {
   const sandbox = {
     console, Math, JSON, String, Number, Array, Object, Error, parseInt, parseFloat, isFinite,
     document,
+    Image: FakeImage,
     location: { search: query || '?g=5' },
     localStorage: localStorageStub,
     URLSearchParams,
@@ -108,7 +115,7 @@ const seenText = {};
 const roundSizes = {};
 
 (async () => {
-  let questions = 0, resumeChecks = 0, resumeOk = 0;
+  let questions = 0, reloads = 0, reloadOk = 0;
 
   for (let r = 0; r < 200; r++) {
     const grade = r % 2 ? 6 : 5;
@@ -128,7 +135,7 @@ const roundSizes = {};
       assert(!/NaN|undefined|Infinity/.test(x.q + x.o.join('')), 'token bad: ' + x.q);
     });
 
-    /* answer question 1, then reload mid-round to test resume */
+    /* 只答一题绝不能通关 —— 线上出现过"一题就过" */
     let st = pg.sandbox.window.__dbg();
     let q = st.plan[st.idx];
     flush(pg);
@@ -138,16 +145,19 @@ const roundSizes = {};
     bySub[q.subject] = bySub[q.subject] || {};
     bySub[q.subject][q.q] = (bySub[q.subject][q.q] || 0) + 1;
     flush(pg);
+    const one = pg.sandbox.window.__dbg();
+    assert(pg.els.done.style.display !== 'flex', 'one answer finished the round');
+    assert(one.idx === 1, 'idx after one answer: ' + one.idx);
 
+    /* 中途重开页面必须从第 1 题重新来，不接续旧进度 */
     if (r % 3 === 0) {
-      const before = pg.sandbox.window.__dbg();
       pg = newPage('?g=' + grade);
       await tick();
       flush(pg);
       const after = pg.sandbox.window.__dbg();
-      resumeChecks++;
-      if (after.idx === before.idx && after.plan[0].q === before.plan[0].q) resumeOk++;
-      else assert(false, 'resume failed: ' + before.idx + ' -> ' + after.idx);
+      reloads++;
+      if (after.idx === 0 && after.plan.length === 3) reloadOk++;
+      else assert(false, 'reload not fresh: idx ' + after.idx + ' n ' + after.plan.length);
     }
 
     /* finish the round */
@@ -164,14 +174,15 @@ const roundSizes = {};
       flush(pg);
     }
     assert(pg.els.done.style.display === 'flex', 'finish not reached');
-    assert(store.tvquiz_state === undefined, 'state not cleared');
   }
 
   const distinct = Object.keys(seenText).length;
   const repeated = Object.keys(seenText).filter(k => seenText[k] > 1).length;
   console.log('pages:', stats.pages, 'rounds: 200', 'questions:', questions);
   console.log('round sizes:', JSON.stringify(roundSizes));
-  console.log('resume ok:', resumeOk + '/' + resumeChecks);
+  console.log('fresh after reload:', reloadOk + '/' + reloads);
+  console.log('beacons:', stats.beacons.length);
+  assert(!('tvquiz_state' in store), 'page still writes tvquiz_state');
   console.log('pass.sh calls:', stats.pass);
   console.log('distinct texts:', distinct, '| repeated texts:', repeated);
   Object.keys(bySub).forEach(function (s) {

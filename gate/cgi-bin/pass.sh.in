@@ -1,0 +1,6 @@
+#!/system/bin/sh
+# 通关标记：看门狗每 3 秒查一次这个文件（@DEVICE_DIR@ 由 tools/install.sh 替换）
+D=@DEVICE_DIR@
+date +%s > "$D/pass.stamp"
+chmod 644 "$D/pass.stamp"
+printf 'Content-Type: text/plain\r\nCache-Control: no-store\r\n\r\nok\r\n'

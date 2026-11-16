@@ -1,0 +1,7 @@
+#!/system/bin/sh
+# 答题信标：页面每看一题、每答一次、通关时各发一次，追加到 quiz.log。
+# 只用于事后核对"这一轮到底答了几题"，写失败不影响答题。
+D=@DEVICE_DIR@
+printf '%s %s\n' "$(date '+%m-%d %H:%M:%S')" "$QUERY_STRING" >> "$D/quiz.log" 2>/dev/null
+chmod 644 "$D/quiz.log" 2>/dev/null
+printf 'Content-Type: text/plain\r\nCache-Control: no-store\r\n\r\nok\r\n'
