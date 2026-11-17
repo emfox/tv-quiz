@@ -27,7 +27,8 @@ quiz/                   出题与页面
   ├── cli.js              命令行出题，用来预览和校验
   └── check.js sim.js adj_sample.js   自检脚本
 gate/                   控制部分
-  ├── gate.sh             看门狗（root 运行；设备差异全从 config.sh 读）
+  ├── gate.sh             看门狗主循环（约 70 行：计时、到点弹题、放行）
+  ├── lib.sh              看门狗函数库（前台解析、计时判定、弹题、恢复；可单独 source 测试）
   ├── tvgate.rc.in        init 服务模板（initrc 自启用，@DEVICE_DIR@ 由安装脚本替换）
   ├── boot.sh.in          开机脚本模板（magisk / initd 自启用）
   └── cgi-bin/
@@ -39,6 +40,11 @@ tools/
   ├── probe.sh            采样前台应用，帮新机器填名单
   ├── uninstall.sh        卸载
   └── tvroot.sh           以 root 执行命令并回读输出（依赖固件里的 tvroot 服务）
+tests/                  测试（全部离线，不需要设备）
+  ├── run.sh              总入口：bash tests/run.sh
+  ├── lib.sh              断言与临时设备目录
+  ├── fake-adb.sh         假 adb，给安装脚本测试用
+  └── t-*.sh              各模块的单元测试
 ```
 
 设备上统一落在 `/data/local/tmp/tvquiz/`（可用 `DEVICE_DIR` 改）。
@@ -123,6 +129,30 @@ adb shell touch /data/local/tmp/tvquiz/pause             # 暂停（不弹题）
 adb shell rm    /data/local/tmp/tvquiz/pause             # 恢复
 adb shell 'echo set=1 >> /data/local/tmp/tvquiz/state'   # 把当天次数手动改成 1，10 秒内生效
 ```
+
+## 测试
+
+```sh
+bash tests/run.sh                      # 全部：shell 单测 + 题库 + 页面
+NODE=/path/to/node bash tests/run.sh   # node 不在 PATH 时
+```
+
+| 文件 | 覆盖什么 |
+|---|---|
+| `tests/t-syntax.sh` | 所有脚本 `sh -n` / `bash -n`；gate.sh 真的引用了 lib.sh，install.sh 真的会部署它 |
+| `tests/t-gate-config.sh` | 配置解析、行内注释剥离、档位表边界 |
+| `tests/t-gate-state.sh` | 当天次数的读写、跨日清零、坏数据容错 |
+| `tests/t-gate-date.sh` | 日期可信性、启动时"等时钟稳定"（含跳变与回拨） |
+| `tests/t-gate-judge.sh` | 前台组件解析（新旧 ROM）、是否计入、答题页可见性、回到原应用、弹题 URL 参数 |
+| `tests/t-install.sh` | 配置合并与去重、浏览器探测、三种自启落点、无 root 时的降级 |
+| `quiz/check.js` | 13.7 万道题的选项结构（4 个不重复、答案索引合法、无 NaN） |
+| `quiz/sim.js` | 假 DOM 跑 200 轮真实页面：每轮 3 题、单题不通关、重开从头开始 |
+
+全离线，**不需要电视**：shell 测试用临时目录当设备目录、用 `tests/fake-adb.sh` 冒充 adb。
+CI 跑同一条命令，见 `.github/workflows/test.yml`。
+
+改功能前先跑一遍，改完再跑一遍——这些用例就是防漂移的锚点。加新功能时顺手把
+"期望行为"写成一条 `eq` / `yes`，比事后回忆可靠。
 
 ## 安装 / 更新 / 卸载
 

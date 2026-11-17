@@ -1,0 +1,21 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # 全部离线：shell 单测用假 adb，题库/页面用 node，不碰真机
+      - name: 单元测试与端到端
+        run: bash tests/run.sh

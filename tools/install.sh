@@ -144,8 +144,9 @@ for f in pass log; do
   A push "$MERGED.cgi" "$D/cgi-bin/$f.sh" >/dev/null || { echo "推送 cgi-bin/$f.sh 失败" >&2; exit 1; }
 done
 A push "$ROOT/gate/gate.sh" "$D/gate.new" >/dev/null || exit 1
+A push "$ROOT/gate/lib.sh" "$D/lib.new" >/dev/null || exit 1
 A push "$MERGED" "$D/config.sh" >/dev/null || exit 1
-A shell "cd $D && mv -f gate.new gate.sh && chmod 755 gate.sh cgi-bin/pass.sh cgi-bin/log.sh" || exit 1
+A shell "cd $D && mv -f lib.new lib.sh && mv -f gate.new gate.sh && chmod 644 lib.sh && chmod 755 gate.sh cgi-bin/pass.sh cgi-bin/log.sh" || exit 1
 echo "文件就位: $(A shell "ls $D" | tr '\n' ' ')"
 
 # ---- 开机自启 -------------------------------------------------------------
