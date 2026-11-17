@@ -34,11 +34,14 @@ case "$sub" in
       *init.svc.tvgate*)         echo running; exit 0 ;;
       *"pm list packages"*)      cat "$STATE/packages" 2>/dev/null; exit 0 ;;
       *"su -c true"*)            [ -f "$STATE/no_root" ] && exit 1; exit 0 ;;
-      *"su -c"*)                 echo "root: $cmd" >> "$LOG"; exit 0 ;;
+      *"su -c"*)                 echo "root: $cmd" >> "$LOG"
+                                 case "$cmd" in *tvgate.rc*) [ -f "$STATE/no_root" ] || touch "$STATE/rc_exists" ;; esac
+                                 exit 0 ;;
       *"/data/adb/service.d ]"*) [ -f "$STATE/service_d" ] && echo y; exit 0 ;;
       *"/vendor/etc/init ]"*)    [ -f "$STATE/vendor_init" ] && echo y; exit 0 ;;
       *"/system/etc/init.d ]"*)  [ -f "$STATE/init_d" ] && echo y; exit 0 ;;
       *tvgate.rc*wc*)            [ -f "$STATE/rc_exists" ] && echo 1 || echo 0; exit 0 ;;
+      *"cp /data/local/tmp/tvgate.rc"*) touch "$STATE/rc_exists"; exit 0 ;;
       *"ls "*)                   echo "config.sh"; exit 0 ;;
       *) exit 0 ;;
     esac

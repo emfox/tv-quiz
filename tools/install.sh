@@ -167,8 +167,13 @@ install_boot() {
       fi
       sed "s|@DEVICE_DIR@|$D|g" "$ROOT/gate/tvgate.rc.in" > "$MERGED.rc"
       A push "$MERGED.rc" "/data/local/tmp/tvgate.rc" >/dev/null
-      root_run "cp /data/local/tmp/tvgate.rc $RC_TARGET && chmod 644 $RC_TARGET && sync"
-      echo "已装 $RC_TARGET（重启电视后由 init 拉起）"
+      # /vendor is mounted read-only on boot; remount first or cp silently fails
+      root_run "mount -o remount,rw /vendor 2>/dev/null; mount -o remount,rw / 2>/dev/null; cp /data/local/tmp/tvgate.rc $RC_TARGET && chmod 644 $RC_TARGET && sync" >/dev/null
+      if [ "$(A shell "ls $RC_TARGET 2>/dev/null | wc -l" | tr -d '\r')" = "1" ]; then
+        echo "已装 $RC_TARGET（重启电视后由 init 拉起）"
+      else
+        echo "!! 写入 $RC_TARGET 失败（/vendor 只读且 remount 不了）" >&2
+      fi
       ;;
     magisk|initd)
       if [ -z "$root_mode" ]; then
