@@ -21,16 +21,22 @@ tv-quiz 本身要靠 root shell 跑，但「怎么拿到 root」「怎么装 ini
 所以：`dumpsys` / `am` / 读写自己那份状态文件 → 用默认通道，快；remount、装 init 服务、
 改属性 → 必须 `-t`。
 
-★ `su` **不在 PATH 上**。要补 `su-link.sh`；但注意它只解决「找不到命令」，**`-p` 还是不能省**——
-见下面第一个坑。
+★ 原厂没有 `su`。`/factory/su` 是 init 每次开机从 `/system/bin/sh` 复制出来的一份 mksh（见
+`/init.rc:903-908`），只给 euid 0、真 uid 还是 2000 ⟹ `su -c cmd` 会自己降权。`device/su/` 里的
+wrapper 解决这个问题，见下面「`/system/bin/su` 是谁」。
 
 ## 文件
 
 | 文件 | 干什么 |
 |---|---|
 | `root.sh` | 唯一入口。`'命令'` / `-f 脚本` / 从 stdin 读；`-t` 切到 tvroot 通道。命令走文件推送，不用跟引号搏斗 |
-| `su-link.sh` | 补 `/system/bin/su -> /factory/su` 软链。**必须走 `-t`**（要 remount `/`） |
+| `su/su.c` | 1 KB 的 freestanding wrapper：`setresgid(0,0,0)` + `setresuid(0,0,0)` 后 exec `/system/bin/sh` |
+| `su/Makefile` | 交叉编译成 32 位 ARM 静态 ELF（设备 ABI 是 armeabi-v7a） |
+| `su/install.sh` | 编译 + 安装到 `/system/bin/su`，6755，装完自动 remount 回只读 |
 | `launcher/install.sh` | 装防抢桌面的 init 服务到 `/vendor/etc/init/lchome.rc` |
+| `launcher/lchome.rc.in` | 上面那个服务的模板，`@DEVICE_DIR@` 由 `install.sh` 替换 |
+| `launcher/lchome.sh` | 服务体：等 `sys.boot_completed=1` 再等 10 秒，发标准 HOME intent（换任何桌面都能用） |
+| `launcher/tvhome.rc` | 更简单的备选：开机 8 秒后直接 `am start` Projectivy，不通用于别的桌面 |
 | `launcher/lchome.rc.in` | 上面那个服务的模板，`@DEVICE_DIR@` 由 `install.sh` 替换 |
 | `launcher/lchome.sh` | 服务体：等 `sys.boot_completed=1` 再等 10 秒，发标准 HOME intent（换任何桌面都能用） |
 | `launcher/tvhome.rc` | 更简单的备选：开机 8 秒后直接 `am start` Projectivy，不通用于别的桌面 |
@@ -48,24 +54,45 @@ adb connect "$TV_HOST"
 ```sh
 device/root.sh 'id'
 device/root.sh -t 'mount -o remount,rw /'
-device/root.sh -f device/su-link.sh          # 会失败，remount 需要能力
-device/root.sh -t -f device/su-link.sh       # 这样才对
+device/root.sh -f some-script.sh              # su 通道；要 remount 就加 -t
 printf 'mount | head -3\n' | device/root.sh
-device/launcher/install.sh                   # 装 lchome，重启后生效
+device/su/install.sh                          # 编译并安装 /system/bin/su
+device/launcher/install.sh                    # 装 lchome，重启后生效
 ```
 
-`su-link.sh` 装完，`su` 能找到，但**仍要带 `-p`**：
+## `/system/bin/su` 是谁
+
+原厂固件没有 `su`。`/factory/su` 确实是很好的 root 通道，但它是 mksh 的副本、只改 euid，
+所以 `su -c cmd` 里的 `sh` 又会自己降权（见坑 1）。`device/su/` 装的是一个 1 KB 的 wrapper：
+
+```
+setresgid(0,0,0) → setresuid(0,0,0) → execve("/system/bin/sh", {"sh", "-c", cmd, ...}, envp)
+```
+
+真 uid 也变成 0 之后，mksh 的 `euid != ruid` 判断不再成立，**`su -c` 不用带 `-p` 了**，
+脚本里写 `su -c ...` 的老习惯也能正常工作。装法：`device/su/install.sh`。
+
+固化：写进 `/system/bin/su`（`/` 是 ext4 实体分区，`chmod 6755`），**重启后还在，而且不依赖
+每次开机重建的 `/factory/su`**。`/factory/su` 本身不动，`root.sh` 也按绝对路径用它，所以
+wrapper 装坏了不会把人锁在外面。
+
+**仍然做不到 remount。** shell 域的 `CapBnd` 只有 `0xc0`（`CAP_SETGID|CAP_SETUID`），
+能力边界集不能靠 exec 一个 setuid 二进制突破，所以 `su` 里永远不会有 `CAP_SYS_ADMIN`。
+要 remount 或动 init 服务，只能 `device/root.sh -t`。实测 `su -c 'stop x'` 已经不再报
+`must be root`（uid 检查过了），但会死在 `failed to set property 'ctl.stop'`——SELinux 拦的。
+
+装坏了回退成软链（能跑，但 `-p` 得自己带）：
 
 ```sh
-su -c id        # uid=2000 → 等于没 root
-su -p -c id     # uid=0
+device/root.sh -t 'mount -o remount,rw /; rm -f /system/bin/su; ln -sf /factory/su /system/bin/su; mount -o remount,ro /'
 ```
 
 ## 四个坑（都是实测踩出来的）
 
-1. **`-p` 不能省，也不能再套一层 `sh`。** mksh 见到 `euid != ruid` 就 `setuid(getuid())` 降权。
-   `-p` 保住 euid 0；但 `/factory/su -p -c 'sh foo.sh'` 里那个内层 `sh` 又没带 `-p`，照样降回 2000。
-   正确写法是直接把脚本交给特权 mksh：`/factory/su -p /path/foo.sh`。`root.sh` 就是这么做的。
+1. **走 `/factory/su` 时 `-p` 不能省，也不能再套一层 `sh`。** mksh 见到 `euid != ruid` 就
+   `setuid(getuid())` 降权。`-p` 保住 euid 0；但 `/factory/su -p -c 'sh foo.sh'` 里那个内层 `sh`
+   又没带 `-p`，照样降回 2000。正确写法是直接把脚本交给特权 mksh：`/factory/su -p /path/foo.sh`。
+   `root.sh` 就是这么做的。（装了 `device/su` 的 wrapper 之后就没这回事了，真 uid 已经是 0。）
 2. **推给 root 的文件得是 644。** `adb push` 落盘属主是 `shell`，root 通道没有 `CAP_DAC_OVERRIDE`，
    `chmod 700` 会让它自己都读不了（`sh: Permission denied`）。
 3. **判进程要锚定。** `pgrep -f '^/system/bin/sh /path/x.sh'`，`^` 不能省：不带锚点会把执行扫描的

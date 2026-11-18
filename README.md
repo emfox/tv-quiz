@@ -42,7 +42,7 @@ tools/
   └── tvroot.sh           以 root 执行命令并回读输出（依赖固件里的 tvroot 服务）
 device/                 这台电视的 root / init 小工具（与答题逻辑无关，见 device/README.md）
   ├── root.sh             以 root 执行命令的入口（默认 /factory/su，`-t` 切 tvroot 服务）
-  ├── su-link.sh          补 /system/bin/su 软链
+  ├── su/                 自编 setuid wrapper，装成 /system/bin/su（源码 + Makefile + install.sh）
   └── launcher/           防 TCL 抢桌面的 init 服务
 tests/                  测试（全部离线，不需要设备）
   ├── run.sh              总入口：bash tests/run.sh

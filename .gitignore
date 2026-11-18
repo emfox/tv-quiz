@@ -7,3 +7,4 @@ pass.stamp
 .tvroot.cmd
 .tvgate.rc
 .test/
+device/su/su
