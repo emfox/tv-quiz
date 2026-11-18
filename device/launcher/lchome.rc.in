@@ -1,0 +1,5 @@
+service lchome /system/bin/sh @DEVICE_DIR@/lchome.sh
+    class late_start
+    user root
+    group root system
+    oneshot

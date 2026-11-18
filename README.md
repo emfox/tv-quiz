@@ -40,6 +40,10 @@ tools/
   ├── probe.sh            采样前台应用，帮新机器填名单
   ├── uninstall.sh        卸载
   └── tvroot.sh           以 root 执行命令并回读输出（依赖固件里的 tvroot 服务）
+device/                 这台电视的 root / init 小工具（与答题逻辑无关，见 device/README.md）
+  ├── root.sh             以 root 执行命令的入口（默认 /factory/su，`-t` 切 tvroot 服务）
+  ├── su-link.sh          补 /system/bin/su 软链
+  └── launcher/           防 TCL 抢桌面的 init 服务
 tests/                  测试（全部离线，不需要设备）
   ├── run.sh              总入口：bash tests/run.sh
   ├── lib.sh              断言与临时设备目录
@@ -297,3 +301,5 @@ adb shell "nohup /data/local/tmp/tvquiz/gate.sh >/dev/null 2>&1 &"
 - HDMI 输入在系统里就是 `com.tcl.tv`，所以外接 Switch / 电视果同样计时；答题那几分钟主机不会暂停。
 - 这台机器的 `root` 来自刷过的固件里的 `tvroot` init 服务（`CapEff=3fffffffff`）；原厂固件上
   `su` 是空壳（`CapBnd=0xc0`）。换机器时只要 `su` 能拿到完整权限（Magisk 等）就行。
+  固件自带的 `/factory/su` 只给 uid 0、`CapEff=0`，remount 和动 init 服务都不行——两条通道的
+  区别和用法见 `device/README.md`。

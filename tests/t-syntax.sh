@@ -4,7 +4,8 @@
 
 echo "语法"
 
-for f in gate/gate.sh gate/lib.sh gate/boot.sh.in gate/cgi-bin/pass.sh.in gate/cgi-bin/log.sh.in; do
+for f in gate/gate.sh gate/lib.sh gate/boot.sh.in gate/cgi-bin/pass.sh.in gate/cgi-bin/log.sh.in \
+         device/su-link.sh device/launcher/lchome.sh; do
   if sh -n "$ROOT/$f" 2>/dev/null; then
     pass "sh -n $f"
   else
@@ -13,7 +14,8 @@ for f in gate/gate.sh gate/lib.sh gate/boot.sh.in gate/cgi-bin/pass.sh.in gate/c
 done
 
 for f in tools/install.sh tools/status.sh tools/probe.sh tools/uninstall.sh tools/tvroot.sh \
-         tests/run.sh tests/t-install.sh tests/fake-adb.sh; do
+         device/root.sh device/launcher/install.sh \
+         tests/run.sh tests/t-install.sh tests/fake-adb.sh tests/t-device-root.sh; do
   if bash -n "$ROOT/$f" 2>/dev/null; then
     pass "bash -n $f"
   else

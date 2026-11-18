@@ -1,0 +1,17 @@
+# Minimal init service that puts a launcher back in front after boot.
+#
+# This is the short version, hard-wired to Projectivy.  launcher/lchome.sh does
+# the same thing through the standard HOME intent and works with any launcher,
+# so prefer that one unless you only ever want Projectivy.
+#
+# Install as /vendor/etc/init/tvhome.rc, then reboot.
+
+service tvhome /system/bin/sh -c "sleep 8; am start -n com.spocky.projengmenu/com.spocky.projengmenu.ui.home.MainActivity"
+    class late_start
+    user root
+    group root system
+    oneshot
+    disabled
+
+on property:sys.boot_completed=1
+    start tvhome
