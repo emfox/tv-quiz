@@ -39,8 +39,9 @@ case "$BOOT_MODE" in
   initd)  dev_exists /system/etc/init.d/99-tvquiz && echo "  init.d: 已安装" || echo "  init.d: 缺失" ;;
   none)   echo "  无自启（重启后需手动启动）" ;;
 esac
-# 用 cat 读 cmdline：进程可能刚好退出，`< $p/cmdline` 会让 sh 自己报错
-running="$(A shell "for p in /proc/[0-9]*; do c=\$(cat \$p/cmdline 2>/dev/null | tr '\\0' ' '); case \"\$c\" in *$D/gate.sh*) echo yes;; esac; done" | tr -d '\r' | head -1)"
+# pgrep -f matches the full argv; scanning /proc for a substring also matched the
+# scanning command itself, so this reported "running" when nothing was.
+running="$(A shell "pgrep -f '^/system/bin/sh $D/gate.sh' | head -1" | tr -d '\r')"
 if [ -n "$running" ]; then echo "看门狗  : 在跑"; else echo "看门狗  : 没在跑"; fi
 dev_exists "$D/pause" && echo "pause   : 有（闸门暂停中）" || echo "pause   : 无（闸门生效中）"
 

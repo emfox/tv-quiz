@@ -47,7 +47,7 @@ root_run() {
 
 echo "停止看门狗"
 if [ -n "$root_mode" ]; then
-  root_run "for p in /proc/[0-9]*; do c=\$(cat \$p/cmdline 2>/dev/null | tr '\\000' ' '); case \"\$c\" in *$D/gate.sh*) kill \${p#/proc/};; esac; done"
+  root_run "pkill -f '^/system/bin/sh $D/gate.sh' || true"
 else
   echo "无 root，进程会继续跑到下次重启" >&2
 fi

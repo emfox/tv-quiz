@@ -203,14 +203,14 @@ install_boot
 # ---- 重启看门狗 ----------------------------------------------------------
 if [ "$RESTART" = "1" ] && [ -n "$root_mode" ]; then
   say "重启看门狗（配置与脚本生效）"
-  root_run "for p in /proc/[0-9]*; do c=\$(cat \$p/cmdline 2>/dev/null | tr '\\000' ' '); case \"\$c\" in *$D/gate.sh*) kill \${p#/proc/};; esac; done"
+  root_run "pkill -f '^/system/bin/sh $D/gate.sh' || true"
   sleep 3
   svc="$(A shell getprop init.svc.tvgate 2>/dev/null | tr -d '\r')"
   if [ "$BOOT_MODE" = "initrc" ]; then
     echo "服务状态: ${svc:-?}"
   else
     # 非 initrc 时没有 init 服务托管，直接确认进程在跑
-    running="$(A shell "for p in /proc/[0-9]*; do c=\$(cat \$p/cmdline 2>/dev/null | tr '\\0' ' '); case \"\$c\" in *$D/gate.sh*) echo yes;; esac; done" | tr -d '\r' | head -1)"
+    running="$(A shell "pgrep -f '^/system/bin/sh $D/gate.sh' | head -1" | tr -d '\r')"
     echo "进程: ${running:-没起来}"
   fi
 elif [ "$RESTART" = "1" ]; then
